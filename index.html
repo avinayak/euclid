@@ -43,10 +43,6 @@
         text-align: center;
       }
 
-      #hours {
-        transition: all 0.3s ease;
-      }
-
       #minute_part_2 {
         display: flex;
         flex-direction: column;
@@ -72,8 +68,8 @@
     </div>
 
     <script>
-      const BUFFER_SIZE = 19;
-      const fontSize = 700;
+      let BUFFER_SIZE = 19;
+      let fontSize = 750;
 
       const hoursEl = document.getElementById("hours");
       const minutePart1El = document.getElementById("minute_part_1");
@@ -110,7 +106,7 @@
       function updateClock() {
         const now = new Date();
 
-        const hours = now.getHours() % 12 || 12;
+        const hours = 12; //now.getHours() % 12 || 12;
         const minutes = now.getMinutes();
         const seconds = now.getSeconds();
 
@@ -143,11 +139,6 @@
           setDigitRow(bufferEl, content);
         }
 
-        const fontSize = parseInt(
-          window.getComputedStyle(document.body).fontSize,
-          10
-        );
-
         const b = (fontSize / 600) * 16;
         const offset = 0 - seconds * b;
 
@@ -156,12 +147,25 @@
           minutes % 10 === 9 ? `${offset}px` : "0px";
       }
 
-      document.body.style.fontSize = `${fontSize}px`;
-      document.getElementById("minute_part_2").style.marginLeft = `-${
-        320 * (fontSize / 500)
-      }px`;
-      initializeMinuteBuffer();
-      updateClock();
+      function onInitialize() {
+        const resizeObserver = new ResizeObserver(() => {
+          console.log("resize observed", window.innerWidth);
+          fontSize = (window.innerWidth * 750) / 1952;
+          document.body.style.fontSize = `${fontSize}px`;
+          document.getElementById("minute_part_2").style.marginLeft = `-${
+            320 * (fontSize / 500)
+          }px`;
+          initializeMinuteBuffer();
+          updateClock();
+        });
+
+        resizeObserver.observe(document.body);
+        initializeMinuteBuffer();
+        updateClock();
+      }
+
+      onInitialize();
+
       setInterval(updateClock, 1000);
 
       document.body.addEventListener("click", () => {
