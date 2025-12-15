@@ -190,7 +190,7 @@
       function updateClock() {
         const now = new Date();
 
-        const hours = 12; //now.getHours() % 12 || 12;
+        const hours = now.getHours() % 12 || 12;
         const minutes = now.getMinutes();
         const seconds = now.getSeconds();
 
