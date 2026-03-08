@@ -306,10 +306,7 @@
       // the font metrics at the base size.
       const ROW_HEIGHT_RATIO = 16 / 600;
 
-      // Damped sine wave parameters for the tick animation.
-      const TICK_DURATION_MS = 400; // animation settles in 350ms
-      const TICK_DECAY_RATE = 4; // fast exponential decay for tight snap
-      const TICK_OSCILLATIONS = 4; // single overshoot + settle
+      // (Animation constants removed — using smooth continuous scrolling)
 
       // Unicode braille blank (U+2800) — same width as a digit in this font,
       // used as an invisible spacer when only the ones digit should show.
@@ -554,26 +551,7 @@
         }
       }
 
-      // ── Animation easing ──
-
-      /**
-       * Compute the damped sine wave easing value for the current tick.
-       *
-       * Models a clock hand that overshoots its target then oscillates
-       * to rest. Returns 0 at the start of a tick, 1 when settled.
-       *
-       * Formula: eased = 1 - e^(-decay * t) * cos(oscillations * π * t)
-       *
-       * @param {number} millis - milliseconds elapsed in the current second
-       * @returns {number} eased progress from 0 to 1
-       */
-      function dampedSineEasing(millis) {
-        if (millis >= TICK_DURATION_MS) return 1;
-        const t = millis / TICK_DURATION_MS;
-        const decay = Math.exp(-TICK_DECAY_RATE * t);
-        const oscillation = Math.cos(TICK_OSCILLATIONS * Math.PI * t);
-        return 1 - decay * oscillation;
-      }
+      // ── Animation ── (smooth continuous scrolling, no easing)
 
       // ── Clock update (called every animation frame) ──
 
@@ -616,8 +594,7 @@
         // by one row per second, with the damped sine easing applied to
         // the current second's fractional progress.
         const rowHeight = fontSize * ROW_HEIGHT_RATIO;
-        const eased = dampedSineEasing(millis);
-        const smoothSeconds = seconds - 1 + eased;
+        const smoothSeconds = seconds + millis / 1000;
         const scrollOffset = -smoothSeconds * rowHeight;
 
         // Apply vertical scroll to the ones-digit column (always scrolling)
