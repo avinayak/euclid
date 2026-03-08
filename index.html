@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -95,6 +95,7 @@
         src: url("SF-Pro-Display-Light.otf") format("opentype");
       }
 
+      /* ── Reset ── */
       * {
         margin: 0;
         padding: 0;
@@ -102,6 +103,7 @@
         user-select: none;
       }
 
+      /* ── Theme (click body to toggle) ── */
       body {
         background-color: black;
         color: white;
@@ -109,9 +111,11 @@
         align-items: center;
         justify-content: right;
         height: 100vh;
-        overflow: hidden;
+        overflow: hidden; /* viewport clips off-screen buffer rows */
         cursor: pointer;
-        transition: background-color 0.3s ease, color 0.3s ease;
+        transition:
+          background-color 0.3s ease,
+          color 0.3s ease;
       }
 
       body.inverted {
@@ -119,6 +123,13 @@
         color: black;
       }
 
+      /* ── Clock layout ──
+         Three flex children sit in a row, vertically centered:
+           #hours         — "H:" text, slides out at :59
+           #minute_part_1 — tens digit of minutes, slides out at :x9
+           #minute_part_2 — scrolling column of ones digits (+ tens on x0 rows)
+         Vertical centering (align-items:center) keeps the "current" row
+         in the viewport center. Rows above/below are clipped by body overflow. */
       #clock {
         font-family: "SF Pro Display", sans-serif;
         display: flex;
@@ -127,10 +138,12 @@
         text-align: center;
       }
 
+      /* minute_part_2 overlaps minute_part_1 via negative margin so that
+         the tens digit in x0 rows (e.g. "10", "20") visually replaces it. */
       #minute_part_2 {
         display: flex;
         flex-direction: column;
-        margin-left: -320px;
+        margin-left: -320px; /* scaled dynamically in JS on resize */
       }
 
       .digit_container {
@@ -141,10 +154,104 @@
       .digit {
         width: 0.65em;
       }
+
+      /* ── Debug menu (press D to toggle) ── */
+      #debug-menu {
+        display: none;
+        position: fixed;
+        top: 20px;
+        left: 20px;
+        background: rgba(30, 30, 30, 0.95);
+        color: #fff;
+        padding: 16px 20px;
+        border-radius: 10px;
+        font-family: -apple-system, sans-serif;
+        font-size: 14px;
+        z-index: 1000;
+        cursor: default;
+      }
+
+      body.inverted #debug-menu {
+        background: rgba(230, 230, 230, 0.95);
+        color: #000;
+      }
+
+      #debug-menu.visible {
+        display: block;
+      }
+
+      #debug-menu h3 {
+        margin: 0 0 12px 0;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        opacity: 0.6;
+      }
+
+      .debug-row {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 8px;
+      }
+
+      .debug-row label {
+        width: 60px;
+        font-size: 13px;
+      }
+
+      .debug-row button {
+        width: 28px;
+        height: 28px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: rgba(255, 255, 255, 0.1);
+        color: inherit;
+        border-radius: 6px;
+        font-size: 16px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      body.inverted .debug-row button {
+        border-color: rgba(0, 0, 0, 0.2);
+        background: rgba(0, 0, 0, 0.1);
+      }
+
+      .debug-row button:hover {
+        background: rgba(255, 255, 255, 0.25);
+      }
+
+      body.inverted .debug-row button:hover {
+        background: rgba(0, 0, 0, 0.2);
+      }
+
+      .debug-row span {
+        width: 30px;
+        text-align: center;
+        font-variant-numeric: tabular-nums;
+      }
     </style>
   </head>
 
   <body>
+    <div id="debug-menu">
+      <h3>Debug</h3>
+      <div class="debug-row">
+        <label>Hour</label>
+        <button id="hour-minus">-</button>
+        <span id="hour-offset">0</span>
+        <button id="hour-plus">+</button>
+      </div>
+      <div class="debug-row">
+        <label>Minute</label>
+        <button id="min-minus">-</button>
+        <span id="min-offset">0</span>
+        <button id="min-plus">+</button>
+      </div>
+    </div>
+
     <div id="clock">
       <div id="hours"></div>
       <div id="minute_part_1"></div>
@@ -152,13 +259,148 @@
     </div>
 
     <script>
-      let BUFFER_SIZE = 19;
-      let fontSize = 750;
+      // ╔══════════════════════════════════════════════════════════════════╗
+      // ║  EUCLID CLOCK                                                   ║
+      // ║                                                                 ║
+      // ║  Architecture:                                                  ║
+      // ║  The clock displays time as large scrolling digits. Each second ║
+      // ║  the digit column ticks down one row with a damped sine wave    ║
+      // ║  easing (like a mechanical clock hand overshooting).            ║
+      // ║                                                                 ║
+      // ║  Layout (flex row, vertically centered):                        ║
+      // ║    #hours         — "H:" text                                   ║
+      // ║    #minute_part_1 — tens digit of minutes (e.g. "3" in "35")   ║
+      // ║    #minute_part_2 — scrolling column of BUFFER_SIZE rows        ║
+      // ║                                                                 ║
+      // ║  Scrolling mechanism:                                           ║
+      // ║  minute_part_2 contains 19 rows centered on the current second.║
+      // ║  A negative marginTop scrolls the column upward each second.   ║
+      // ║  Rows outside the viewport are clipped by body overflow:hidden. ║
+      // ║                                                                 ║
+      // ║  Digit transitions:                                             ║
+      // ║  - Ones digit: scrolls every second via minute_part_2           ║
+      // ║  - Tens digit: at :x9, minute_part_1 slides out via marginTop; ║
+      // ║    the new tens digit is embedded in x0 buffer rows             ║
+      // ║  - Hour digit: at :59, #hours slides out via marginTop;        ║
+      // ║    the new hour is embedded in :00 buffer rows, and the old    ║
+      // ║    hour is embedded in :59 rows during minute 0 for exit       ║
+      // ╚══════════════════════════════════════════════════════════════════╝
 
+      // ── Constants ──
+
+      // Number of rows in the scrolling minute buffer. Must be odd so the
+      // current minute sits at the center index. 19 rows gives ±9 rows of
+      // padding above/below, enough to keep off-screen content invisible.
+      const BUFFER_SIZE = 19;
+      const BUFFER_CENTER = Math.floor(BUFFER_SIZE / 2); // index 9
+
+      // Reference font size at the design width (1952px viewport).
+      const BASE_FONT_SIZE = 750;
+      const BASE_VIEWPORT_WIDTH = 1952;
+
+      // Overlap ratio: minute_part_2's negative left margin per font-size unit.
+      // This makes x0 rows' tens digit overlap minute_part_1's position.
+      const OVERLAP_MARGIN_RATIO = 320 / 500;
+
+      // Row height = fontSize * (16/600). Derived from line-height: 80% and
+      // the font metrics at the base size.
+      const ROW_HEIGHT_RATIO = 16 / 600;
+
+      // Damped sine wave parameters for the tick animation.
+      const TICK_DURATION_MS = 100; // animation settles in 350ms
+      const TICK_DECAY_RATE = 4; // fast exponential decay for tight snap
+      const TICK_OSCILLATIONS = 4; // single overshoot + settle
+
+      // Unicode braille blank (U+2800) — same width as a digit in this font,
+      // used as an invisible spacer when only the ones digit should show.
+      const BLANK = "⠀";
+
+      // Workaround: at minute 19, the buffer row "19" has two visible digits
+      // which causes a slight layout shift. This padding compensates.
+      const MINUTE_19_PADDING = "70px";
+
+      // ── State ──
+
+      let fontSize = BASE_FONT_SIZE;
+
+      // Measured pixel positions of #hours relative to minute_part_2,
+      // used to align embedded hour spans in buffer rows.
+      let hourPosLeft = 0; // hoursEl.left - minutePart2El.left
+      let hourPosWidth = 0; // minutePart1El.left - hoursEl.left
+
+      // Debug offsets (adjusted via debug menu, press D)
+      let hourOffset = 0;
+      let minuteOffset = 0;
+
+      // Change detection — skip DOM rebuilds when time hasn't changed.
+      let lastMinute = -1;
+      let lastHour = -1;
+
+      // ── DOM references ──
+
+      const debugMenu = document.getElementById("debug-menu");
+      const hourOffsetEl = document.getElementById("hour-offset");
+      const minOffsetEl = document.getElementById("min-offset");
       const hoursEl = document.getElementById("hours");
       const minutePart1El = document.getElementById("minute_part_1");
       const minutePart2El = document.getElementById("minute_part_2");
 
+      // ── Debug menu ──
+
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "d" || e.key === "D") {
+          debugMenu.classList.toggle("visible");
+        }
+      });
+
+      /** Invalidate cached time so the next updateClock() rebuilds everything. */
+      function invalidateCache() {
+        lastMinute = -1;
+        lastHour = -1;
+      }
+
+      /** Wire up a debug +/- button pair for a given offset variable. */
+      function setupDebugButton(id, delta, getOffset, setOffset, displayEl) {
+        document.getElementById(id).addEventListener("click", (e) => {
+          e.stopPropagation(); // don't toggle theme
+          setOffset(getOffset() + delta);
+          displayEl.textContent = getOffset();
+          invalidateCache();
+        });
+      }
+
+      setupDebugButton(
+        "hour-plus",
+        +1,
+        () => hourOffset,
+        (v) => (hourOffset = v),
+        hourOffsetEl,
+      );
+      setupDebugButton(
+        "hour-minus",
+        -1,
+        () => hourOffset,
+        (v) => (hourOffset = v),
+        hourOffsetEl,
+      );
+      setupDebugButton(
+        "min-plus",
+        +1,
+        () => minuteOffset,
+        (v) => (minuteOffset = v),
+        minOffsetEl,
+      );
+      setupDebugButton(
+        "min-minus",
+        -1,
+        () => minuteOffset,
+        (v) => (minuteOffset = v),
+        minOffsetEl,
+      );
+
+      // ── Digit rendering ──
+
+      /** Create a single fixed-width digit element. */
       function createDigit(char) {
         const div = document.createElement("div");
         div.className = "digit";
@@ -166,20 +408,44 @@
         return div;
       }
 
+      /** Replace a container's contents with a row of digit elements. */
       function setDigitRow(parent, text) {
         parent.innerHTML = "";
-
         const container = document.createElement("div");
         container.className = "digit_container";
-
         for (const char of text) {
           container.appendChild(createDigit(char));
         }
-
         parent.appendChild(container);
       }
 
+      // ── Layout measurement ──
+
+      /**
+       * Measure the pixel position of #hours relative to minute_part_2.
+       * Called after any layout change (resize, hour change) so that
+       * embedded hour spans in buffer rows can be positioned correctly.
+       *
+       * hourPosLeft:  horizontal offset from mp2's left edge to hours' left edge
+       * hourPosWidth: width from hours' left edge to mp1's left edge (where ":" ends)
+       */
+      function measureHourPosition() {
+        const hoursRect = hoursEl.getBoundingClientRect();
+        const mp1Rect = minutePart1El.getBoundingClientRect();
+        const mp2Rect = minutePart2El.getBoundingClientRect();
+        hourPosLeft = hoursRect.left - mp2Rect.left;
+        hourPosWidth = mp1Rect.left - hoursRect.left;
+      }
+
+      // ── Minute buffer ──
+
+      /**
+       * Create BUFFER_SIZE empty div rows inside minute_part_2.
+       * Each row gets an id like "minute_buffer_0" .. "minute_buffer_18".
+       * These are populated by updateMinuteBuffer() whenever the minute changes.
+       */
       function initializeMinuteBuffer() {
+        minutePart2El.innerHTML = "";
         for (let i = 0; i < BUFFER_SIZE; i++) {
           const div = document.createElement("div");
           div.id = `minute_buffer_${i}`;
@@ -187,72 +453,225 @@
         }
       }
 
-      function updateClock() {
-        const now = new Date();
+      /**
+       * Determine what text to display in a buffer row.
+       *
+       * Most rows show only the ones digit (with a blank spacer for the tens).
+       * Rows where ithMinute % 10 === 0 show both digits ("10", "20", etc.)
+       * so the tens digit scrolls in naturally alongside the ones.
+       *
+       * Special cases at the transition boundary (minutes ending in 0 or 1)
+       * ensure the outgoing tens digit row shows correctly.
+       *
+       * @param {number} currentMinute - the actual current minute (0-59)
+       * @param {number} ithMinute     - the minute value for this buffer row (0-59)
+       * @returns {string} display text for the row
+       */
+      function getBufferRowContent(currentMinute, ithMinute) {
+        const minuteText = ithMinute.toString().padStart(2, "0");
+        const onesOnly = BLANK + minuteText[1];
 
-        const hours = now.getHours() % 12 || 12;
-        const minutes = now.getMinutes();
-        const seconds = now.getSeconds();
+        // At a tens boundary (e.g. :10, :20), show both digits on the row
+        // just above (x9) so the old tens digit scrolls out properly.
+        if (currentMinute % 10 === 0) {
+          return ithMinute % 10 === 9 ? minuteText : onesOnly;
+        }
 
-        // Special padding adjustment
-        hoursEl.style.paddingRight = minutes === 19 ? "70px" : "0px";
+        // At one past a tens boundary (e.g. :11, :21), the x0 row is still
+        // near center — show only ones digit to avoid a duplicate tens.
+        if (currentMinute % 10 === 1 && ithMinute % 10 === 0) {
+          return onesOnly;
+        }
 
-        const hoursStr = hours.toString();
-        const minutesStr = minutes.toString().padStart(2, "0");
+        // Default: show both digits on x0 rows, ones-only otherwise.
+        return ithMinute % 10 === 0 ? minuteText : onesOnly;
+      }
 
-        hoursEl.textContent = `${hoursStr}:`;
-        setDigitRow(minutePart1El, minutesStr[0]);
+      /**
+       * Embed an hour label (e.g. "10:") as an absolutely-positioned span
+       * inside a buffer row's digit_container. The span is placed so its
+       * right edge aligns with the measured position of the #hours element.
+       *
+       * @param {HTMLElement} bufferEl - the buffer row element
+       * @param {number} hour         - the hour number to display
+       */
+      function embedHourInRow(bufferEl, hour) {
+        const container = bufferEl.querySelector(".digit_container");
+        container.style.position = "relative";
+
+        const hourSpan = document.createElement("span");
+        hourSpan.textContent = `${hour}:`;
+        hourSpan.style.position = "absolute";
+        container.appendChild(hourSpan);
+
+        // Measure the span's rendered width, then position it so the colon
+        // aligns with the #hours element's colon position.
+        const spanWidth = hourSpan.offsetWidth;
+        const targetRight = hourPosLeft + hourPosWidth;
+        hourSpan.style.left = `${targetRight - spanWidth}px`;
+      }
+
+      /**
+       * Rebuild all buffer rows for the current minute. Called once per minute.
+       *
+       * The buffer is a window of BUFFER_SIZE (19) consecutive minute values
+       * centered on the current second. Each row shows its ones digit (and
+       * optionally tens digit at x0 boundaries). Additionally:
+       *
+       * - The ":00" row embeds the next hour label (always present when
+       *   minutes >= 2, so it's pre-positioned off-screen and scrolls in
+       *   naturally at :59→:00)
+       * - The ":59" row embeds the previous hour label during minute 0
+       *   (so the old hour scrolls out naturally)
+       *
+       * @param {number} minutes  - current minute (0-59)
+       * @param {number} hours    - current hour (1-12)
+       */
+      function updateMinuteBuffer(minutes, hours) {
+        const nextHour = (hours % 12) + 1;
 
         for (let i = 0; i < BUFFER_SIZE; i++) {
           const bufferEl = document.getElementById(`minute_buffer_${i}`);
+          const ithMinute = (minutes + i - BUFFER_CENTER + 60) % 60;
 
-          const ithMinute =
-            (minutes + i - Math.floor(BUFFER_SIZE / 2) + 60) % 60;
-          const minuteText = ithMinute.toString().padStart(2, "0");
+          setDigitRow(bufferEl, getBufferRowContent(minutes, ithMinute));
 
-          let content;
-
-          if (minutes % 10 === 0) {
-            content = ithMinute % 10 === 9 ? minuteText : "⠀" + minuteText[1];
-          } else if (minutes % 10 === 1 && ithMinute % 10 === 0) {
-            content = "⠀" + minuteText[1];
-          } else {
-            content = ithMinute % 10 === 0 ? minuteText : "⠀" + minuteText[1];
+          // Embed next hour on the :00 row. It's placed off-screen for most
+          // minutes and only scrolls into view during :59.
+          // Skipped at minutes 0-1 where :00 is at/near center and the
+          // actual #hours element is already visible.
+          if (ithMinute === 0 && minutes >= 2) {
+            embedHourInRow(bufferEl, nextHour);
           }
 
-          setDigitRow(bufferEl, content);
+          // Embed previous hour on the :59 row during minute 0.
+          // At minute 0 the old hour's #hours element has already changed,
+          // so this span provides the visual exit animation.
+          if (ithMinute === 59 && minutes === 0) {
+            const prevHour = ((hours - 2 + 12) % 12) + 1;
+            embedHourInRow(bufferEl, prevHour);
+          }
         }
-
-        const b = (fontSize / 600) * 16;
-        const offset = 0 - seconds * b;
-
-        minutePart2El.style.marginTop = `${offset}px`;
-        minutePart1El.style.marginTop =
-          minutes % 10 === 9 ? `${offset}px` : "0px";
       }
 
+      // ── Animation easing ──
+
+      /**
+       * Compute the damped sine wave easing value for the current tick.
+       *
+       * Models a clock hand that overshoots its target then oscillates
+       * to rest. Returns 0 at the start of a tick, 1 when settled.
+       *
+       * Formula: eased = 1 - e^(-decay * t) * cos(oscillations * π * t)
+       *
+       * @param {number} millis - milliseconds elapsed in the current second
+       * @returns {number} eased progress from 0 to 1
+       */
+      function dampedSineEasing(millis) {
+        if (millis >= TICK_DURATION_MS) return 1;
+        const t = millis / TICK_DURATION_MS;
+        const decay = Math.exp(-TICK_DECAY_RATE * t);
+        const oscillation = Math.cos(TICK_OSCILLATIONS * Math.PI * t);
+        return 1 - decay * oscillation;
+      }
+
+      // ── Clock update (called every animation frame) ──
+
+      function updateClock() {
+        const now = new Date();
+
+        // Apply debug offsets and compute adjusted 12-hour time
+        const totalMinutes =
+          now.getHours() * 60 +
+          now.getMinutes() +
+          hourOffset * 60 +
+          minuteOffset;
+        const hours = ((Math.floor(totalMinutes / 60) % 12) + 12) % 12 || 12;
+        const minutes = ((totalMinutes % 60) + 60) % 60;
+        const seconds = now.getSeconds();
+        const millis = now.getMilliseconds();
+
+        // Workaround for layout shift at minute 19
+        hoursEl.style.paddingRight = minutes === 19 ? MINUTE_19_PADDING : "0px";
+
+        // Tens digit of minutes (always visible as a static element)
+        const minuteTens = Math.floor(minutes / 10).toString();
+        setDigitRow(minutePart1El, minuteTens);
+
+        // Update hour text (only when hour actually changes)
+        if (hours !== lastHour) {
+          lastHour = hours;
+          hoursEl.textContent = `${hours}:`;
+          measureHourPosition();
+        }
+
+        // Rebuild buffer rows (only when minute changes)
+        if (minutes !== lastMinute) {
+          lastMinute = minutes;
+          updateMinuteBuffer(minutes, hours);
+        }
+
+        // ── Scroll offset calculation ──
+        // Each row is `rowHeight` pixels tall. The column scrolls upward
+        // by one row per second, with the damped sine easing applied to
+        // the current second's fractional progress.
+        const rowHeight = fontSize * ROW_HEIGHT_RATIO;
+        const eased = dampedSineEasing(millis);
+        const smoothSeconds = seconds - 1 + eased;
+        const scrollOffset = -smoothSeconds * rowHeight;
+
+        // Apply vertical scroll to the ones-digit column (always scrolling)
+        minutePart2El.style.marginTop = `${scrollOffset}px`;
+
+        // Tens digit slides out at :x9 → :x0 transition
+        minutePart1El.style.marginTop =
+          minutes % 10 === 9 ? `${scrollOffset}px` : "0px";
+
+        // Hour slides out at :59 → :00 transition
+        // (the incoming hour is embedded in the :00 buffer row)
+        hoursEl.style.marginTop = minutes === 59 ? `${scrollOffset}px` : "0px";
+      }
+
+      // ── Initialization ──
+
       function onInitialize() {
+        // Dynamically scale font size to viewport width
         const resizeObserver = new ResizeObserver(() => {
-          console.log("resize observed", window.innerWidth);
-          fontSize = (window.innerWidth * 750) / 1952;
+          fontSize = (window.innerWidth * BASE_FONT_SIZE) / BASE_VIEWPORT_WIDTH;
           document.body.style.fontSize = `${fontSize}px`;
-          document.getElementById("minute_part_2").style.marginLeft = `-${
-            320 * (fontSize / 500)
+
+          // Scale the overlap margin between minute_part_1 and minute_part_2
+          minutePart2El.style.marginLeft = `-${
+            fontSize * OVERLAP_MARGIN_RATIO
           }px`;
+
+          // Force full rebuild after resize
+          invalidateCache();
           initializeMinuteBuffer();
           updateClock();
+          measureHourPosition();
         });
 
         resizeObserver.observe(document.body);
         initializeMinuteBuffer();
         updateClock();
+        measureHourPosition();
       }
 
       onInitialize();
 
-      setInterval(updateClock, 1000);
+      // ── Animation loop (60fps via requestAnimationFrame) ──
 
-      document.body.addEventListener("click", () => {
+      function animate() {
+        updateClock();
+        requestAnimationFrame(animate);
+      }
+      requestAnimationFrame(animate);
+
+      // ── Theme toggle (click anywhere to invert colors) ──
+
+      document.body.addEventListener("click", (e) => {
+        if (debugMenu.contains(e.target)) return;
         document.body.classList.toggle("inverted");
       });
     </script>
